@@ -37,8 +37,7 @@ FALLBACK_URL <- "https://bakerhughesrigcount.gcs-web.com/static-files/99401d53-5
 
 # ── 1. Dependencies ───────────────────────────────────────────────────────────
 required <- c("httr", "rvest", "jsonlite", "readxl",
-              "dplyr", "tidyr", "lubridate", "plotly", "stringr",
-              "htmltools", "htmlwidgets")
+              "dplyr", "tidyr", "lubridate", "plotly", "stringr")
 new_pkgs <- setdiff(required, rownames(installed.packages()))
 if (length(new_pkgs)) {
   message("Installing: ", paste(new_pkgs, collapse = ", "))
@@ -47,7 +46,7 @@ if (length(new_pkgs)) {
 suppressPackageStartupMessages({
   library(httr);     library(rvest);    library(jsonlite)
   library(readxl);   library(dplyr);    library(tidyr)
-  library(lubridate); library(plotly);  library(stringr); library(htmltools)
+  library(lubridate); library(plotly);  library(stringr)
 })
 
 # ── 2. Auto-discover and download the latest Excel file ───────────────────────
@@ -507,7 +506,7 @@ fig <- fig %>%
     
     xaxis = list(
       title = "",
-      # Range selector removed — rangeslider + 1Y/2Y/5Y/10Y/All buttons
+      # Range selector removed — rangeslider + 1Y/2Y/5Y/8Y/10Y/All buttons
       # below handle all time-span selection needs without eating header space
       rangeslider = list(visible = TRUE, thickness = 0.05)
     ),
@@ -621,58 +620,45 @@ fig <- fig %>%
   )
 
 # ── 10. Save & open ───────────────────────────────────────────────────────────
-# Title is injected as a real HTML element above the Plotly widget so it
-# can never be covered by Plotly's internal updatemenus or annotations.
-# The widget is set to width=100%/height=100vh minus the title row so the
-# chart fills the full browser viewport just like saveWidget() does.
-title_div <- htmltools::tags$div(
-  id    = "chart-title",
-  style = paste0(
-    "font-family: Arial, sans-serif; font-size: 15px; font-weight: bold;",
-    " color: #333; padding: 10px 60px 2px 60px;",
-    " background: #f9f9f9;"
-  ),
-  htmltools::HTML(paste0(
-    "<b>Baker Hughes North American Rig Count</b>",
-    " &mdash; <span style='font-weight:normal; font-style:italic;'>",
-    " 2013&ndash;present</span>"
-  ))
+# Save as a single self-contained HTML (all JS/CSS base64-inlined).
+# The title is injected by post-processing the HTML: we find the opening <body>
+# tag and insert a plain <div> immediately after it, completely outside
+# Plotly's coordinate system so it can never be overlapped by buttons.
+# We also inject a <style> block that makes the Plotly widget fill the
+# remaining viewport height below the title div.
+
+tmp_html <- tempfile(fileext = ".html")
+htmlwidgets::saveWidget(fig, tmp_html, selfcontained = TRUE)
+
+raw <- readLines(tmp_html, encoding = "UTF-8", warn = FALSE)
+
+title_css <- paste0(
+  "<style>",
+  "html,body{margin:0;padding:0;height:100%;background:#f9f9f9;}",
+  "#bh-title{font-family:Arial,sans-serif;font-size:15px;font-weight:bold;",
+  "color:#333;padding:10px 60px 4px 60px;background:#f9f9f9;",
+  "box-sizing:border-box;width:100%;}",
+  ".plotly.html-widget{height:calc(100vh - 42px)!important;width:100%!important;}",
+  "</style>"
 )
 
-# Render the plotly figure as a sized widget (100% wide, fills remaining height)
-fig_widget <- plotly::as_widget(fig)
-fig_widget$sizingPolicy <- htmlwidgets::sizingPolicy(
-  browser.fill    = TRUE,   # expand to fill browser window
-  viewer.fill     = TRUE,
-  knitr.figure    = FALSE
+title_html <- paste0(
+  "<div id='bh-title'>",
+  "<b>Baker Hughes North American Rig Count</b>",
+  " &mdash; <span style='font-weight:normal;font-style:italic;'>",
+  "weekly, 2013&ndash;present",
+  "</span></div>"
 )
 
-html_out <- htmltools::tagList(
-  htmltools::tags$head(
-    htmltools::tags$meta(charset = "utf-8"),
-    htmltools::tags$style(htmltools::HTML(
-      "html, body {
-         margin: 0; padding: 0;
-         height: 100%; width: 100%;
-         background: #f9f9f9;
-       }
-       #chart-title {
-         box-sizing: border-box;
-         width: 100%;
-       }
-       /* Make the htmlwidget div fill remaining vertical space */
-       .plotly.html-widget {
-         height: calc(100vh - 40px) !important;
-         width: 100% !important;
-       }"
-    ))
-  ),
-  title_div,
-  fig_widget
-)
+# Insert CSS into <head> and title div right after <body>
+raw <- sub("</head>", paste0(title_css, "</head>"), raw, fixed = TRUE)
+raw <- sub("<body>",  paste0("<body>", title_html),  raw, fixed = TRUE)
 
-htmltools::save_html(html_out, OUT_HTML, libdir = "bh_rig_count_files")
+writeLines(raw, OUT_HTML, useBytes = FALSE)
+unlink(tmp_html)
+
 message("\nChart saved -> ", normalizePath(OUT_HTML))
+message("Single self-contained file — no external dependencies.")
 browseURL(OUT_HTML)
 
 # ── 11. Console summary ───────────────────────────────────────────────────────
