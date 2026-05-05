@@ -502,11 +502,11 @@ fig <- fig %>%
     # Title is rendered as a plain HTML div ABOVE the widget via
     # htmltools::prependContent — completely outside Plotly's coordinate
     # system, so it never overlaps buttons regardless of browser width.
-    margin = list(t = 80, b = 80, l = 60, r = 20),
+    margin = list(t = 130, b = 80, l = 60, r = 20),
     
     xaxis = list(
       title = "",
-      # Range selector removed — rangeslider + 1Y/2Y/5Y/8Y/10Y/All buttons
+      # Range selector removed — rangeslider + 1Y/2Y/5Y/10Y/All buttons
       # below handle all time-span selection needs without eating header space
       rangeslider = list(visible = TRUE, thickness = 0.05)
     ),
@@ -541,7 +541,7 @@ fig <- fig %>%
       font        = list(size = 11),
       buttons = list(
         make_btn("US vs Canada",
-                 vis_for(1), hover_for(1), "US vs Canada — weekly"),
+                 vis_for(1), hover_for(1), "North America — weekly"),
         make_btn("US by Type",
                  vis_for(2), hover_for(2), "US rigs by drill target — weekly"),
         make_btn("US by Location",
@@ -584,7 +584,7 @@ fig <- fig %>%
                as.character(max(weekly$week)))))),
         list(label = "8Y",  method = "relayout",
              args = list(list(xaxis.range = list(
-               as.character(max(weekly$week) - 2921),
+               as.character(max(weekly$week) - 2922),
                as.character(max(weekly$week)))))),
         list(label = "10Y", method = "relayout",
              args = list(list(xaxis.range = list(
@@ -596,6 +596,15 @@ fig <- fig %>%
     )),
     
     annotations = list(
+      # Title — sits in margin above the view buttons
+      list(
+        text      = "<b>Baker Hughes North American Rig Count</b> - weekly, 2013-present",
+        font      = list(size = 14, color = "#333333"),
+        showarrow = FALSE, xref = "paper", yref = "paper",
+        x = 0, y = 1.155, xanchor = "left", yanchor = "bottom",
+        align = "left"
+      ),
+      # Footer source note
       list(
         text = paste0(
           "Source: Baker Hughes  |  ",
@@ -620,45 +629,11 @@ fig <- fig %>%
   )
 
 # ── 10. Save & open ───────────────────────────────────────────────────────────
-# Save as a single self-contained HTML (all JS/CSS base64-inlined).
-# The title is injected by post-processing the HTML: we find the opening <body>
-# tag and insert a plain <div> immediately after it, completely outside
-# Plotly's coordinate system so it can never be overlapped by buttons.
-# We also inject a <style> block that makes the Plotly widget fill the
-# remaining viewport height below the title div.
-
-tmp_html <- tempfile(fileext = ".html")
-htmlwidgets::saveWidget(fig, tmp_html, selfcontained = TRUE)
-
-raw <- readLines(tmp_html, encoding = "UTF-8", warn = FALSE)
-
-title_css <- paste0(
-  "<style>",
-  "html,body{margin:0;padding:0;height:100%;background:#f9f9f9;}",
-  "#bh-title{font-family:Arial,sans-serif;font-size:15px;font-weight:bold;",
-  "color:#333;padding:10px 60px 4px 60px;background:#f9f9f9;",
-  "box-sizing:border-box;width:100%;}",
-  ".plotly.html-widget{height:calc(100vh - 42px)!important;width:100%!important;}",
-  "</style>"
-)
-
-title_html <- paste0(
-  "<div id='bh-title'>",
-  "<b>Baker Hughes North American Rig Count</b>",
-  " &mdash; <span style='font-weight:normal;font-style:italic;'>",
-  "weekly, 2013&ndash;present",
-  "</span></div>"
-)
-
-# Insert CSS into <head> and title div right after <body>
-raw <- sub("</head>", paste0(title_css, "</head>"), raw, fixed = TRUE)
-raw <- sub("<body>",  paste0("<body>", title_html),  raw, fixed = TRUE)
-
-writeLines(raw, OUT_HTML, useBytes = FALSE)
-unlink(tmp_html)
-
+# Single self-contained HTML — all JS/CSS inlined via pandoc.
+# Title is a Plotly annotation sitting in the margin above the buttons.
+htmlwidgets::saveWidget(fig, OUT_HTML, selfcontained = TRUE)
 message("\nChart saved -> ", normalizePath(OUT_HTML))
-message("Single self-contained file — no external dependencies.")
+message("File size: ", round(file.size(OUT_HTML) / 1e6, 1), " MB")
 browseURL(OUT_HTML)
 
 # ── 11. Console summary ───────────────────────────────────────────────────────
