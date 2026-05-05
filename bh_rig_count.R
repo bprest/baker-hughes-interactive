@@ -598,7 +598,7 @@ fig <- fig %>%
     annotations = list(
       # Title — sits in margin above the view buttons
       list(
-        text      = "<b>Baker Hughes North American Rig Count</b> - weekly, 2013-present",
+        text      = paste0("<b>Baker Hughes North American Rig Count</b> - weekly, 2013 to ", gsub('  ', ' ',(format(as.Date(max(weekly$week)),  "%B %e, %Y")))),
         font      = list(size = 14, color = "#333333"),
         showarrow = FALSE, xref = "paper", yref = "paper",
         x = 0, y = 1.155, xanchor = "left", yanchor = "bottom",
