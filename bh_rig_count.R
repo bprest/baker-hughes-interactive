@@ -1,31 +1,33 @@
 # =============================================================================
-# Baker Hughes North America Rig Count — Interactive Visualization
+# Baker Hughes North America Rig Count - Interactive Visualization
 # =============================================================================
 # Sources
 #   PRIMARY   : auto-scraped live Excel from bakerhughesrigcount.gcs-web.com
-#   HISTORICAL: local Excel file covering 2013–Aug 2025 (user-supplied)
+#   HISTORICAL: local Excel file covering 2013-Aug 2025 (user-supplied)
 #
 # Chart views (toggle via buttons):
-#   1. US vs Canada            — total weekly rigs (lines)
-#   2. US by rig type          — Oil / Gas / Miscellaneous (lines)
-#   3. US by location          — Land / Offshore / Inland Waters (lines)
-#   4. US by basin             — all 14 named basins + Other (stacked area)
-#   5. US basin — Oil-directed — basins filtered to Oil DrillFor
-#   6. US basin — Gas-directed — basins filtered to Gas DrillFor
-#   7. US by state             — top N states + Other (stacked area)
-#   8. Canada by province      — top N provinces + Other (stacked area)
+#   1. US vs Canada            - total weekly rigs (lines)
+#   2. US by rig type          - Oil / Gas / Miscellaneous (lines)
+#   3. US by location          - Land / Offshore / Inland Waters (lines)
+#   4. US by basin             - all 14 named basins + Other (stacked area)
+#   5. US basin - Oil-directed - basins filtered to Oil DrillFor
+#   6. US basin - Gas-directed - basins filtered to Gas DrillFor
+#   7. US by state             - top N states + Other (stacked area)
+#   8. Canada by province      - top N provinces + Other (stacked area)
 #
 # Time span: range-selector buttons (1Y/2Y/5Y/8Y/10Y/All) + drag rangeslider
 # Y-axis: double-click chart to reset; drag y-axis edge to rescale
 # =============================================================================
 
-# ── 0. USER CONFIG ────────────────────────────────────────────────────────────
+# -- 0. USER CONFIG ------------------------------------------------------------
 
-# Path to your historical Excel file (2013–Aug 2025).
+# Path to your historical Excel file (2013-Aug 2025).
 # Can be absolute or relative to your R working directory.
 HIST_FILE <- "08-29-2025 North America Rig Count Report.xlsx"
+LIVE_FILE <- "bh_rig_count_live.xlsx"
+LIVE_URL  <- "manual"
 
-# How many US states / CA provinces to show individually (rest → "Other")
+# How many US states / CA provinces to show individually (rest - "Other")
 TOP_N_US <- 8
 TOP_N_CA <- 5
 
@@ -35,7 +37,7 @@ OUT_HTML <- "bh_rig_count_interactive.html"
 # Known-good fallback URL (used if auto-scrape fails)
 FALLBACK_URL <- "https://bakerhughesrigcount.gcs-web.com/static-files/99401d53-5549-42c3-96fa-844237f73a74"
 
-# ── 1. Dependencies ───────────────────────────────────────────────────────────
+# -- 1. Dependencies -----------------------------------------------------------
 required <- c("httr", "rvest", "jsonlite", "readxl",
               "dplyr", "tidyr", "lubridate", "plotly", "stringr")
 new_pkgs <- setdiff(required, rownames(installed.packages()))
@@ -49,138 +51,139 @@ suppressPackageStartupMessages({
   library(lubridate); library(plotly);  library(stringr)
 })
 
-# ── 2. Auto-discover and download the latest Excel file ───────────────────────
-# The BH rig count page is a React SPA. File links appear as UUIDs inside a
-# __NEXT_DATA__ JSON blob or raw href attributes. We collect ALL candidate
-# UUIDs from the page, then probe each one until we download a valid xlsx.
-# If the page is unreachable we fall back to the hardcoded UUID.
+# httr::set_config(httr::use_proxy(url = Sys.getenv("HTTPS_PROXY")))
+# # -- 2. Auto-discover and download the latest Excel file -----------------------
+# # The BH rig count page is a React SPA. File links appear as UUIDs inside a
+# # __NEXT_DATA__ JSON blob or raw href attributes. We collect ALL candidate
+# # UUIDs from the page, then probe each one until we download a valid xlsx.
+# # If the page is unreachable we fall back to the hardcoded UUID.
+# 
+# PAGE_URL     <- "https://bakerhughesrigcount.gcs-web.com/na-rig-count/"
+# BASE_URL     <- "https://bakerhughesrigcount.gcs-web.com"
+# UUID_PATTERN <- "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+# 
+# BROWSER_UA <- paste0("Mozilla/5.0 (Windows NT 10.0; Win64; x64) ",
+#                      "AppleWebKit/537.36 (KHTML, like Gecko) ",
+#                      "Chrome/124.0.0.0 Safari/537.36")
+# 
+# # TRUE if `path` starts with PK magic bytes (xlsx = zip archive)
+# is_valid_xlsx <- function(path) {
+#   if (!file.exists(path) || file.size(path) < 1000) return(FALSE)
+#   tryCatch({
+#     con   <- file(path, "rb")
+#     magic <- readBin(con, "raw", n = 4)
+#     close(con)
+#     identical(magic, as.raw(c(0x50, 0x4b, 0x03, 0x04)))
+#   }, error = function(e) FALSE)
+# }
+# 
+# # Extract the best Excel URL from the page HTML.
+# # Priority order:
+# #   1. <a> tags whose visible text contains "North America" and "Rig Count"
+# #      (i.e. the "North America Rig Count Report" link, NOT "Read More")
+# #   2. Any static-files UUID that appears in the page
+# #   3. Hardcoded fallback UUID
+# find_excel_url <- function(html) {
+#   page <- tryCatch(rvest::read_html(html), error = function(e) NULL)
+#   
+#   if (!is.null(page)) {
+#     # All <a> elements that link to a static-files UUID
+#     anchors  <- rvest::html_elements(page, paste0("a[href*='static-files']"))
+#     hrefs    <- rvest::html_attr(anchors, "href")
+#     texts    <- rvest::html_text2(anchors)
+#     
+#     if (length(hrefs) > 0) {
+#       # Score each link: prefer ones whose text matches the report label
+#       label_match <- grepl("north.?america", texts, ignore.case = TRUE) &
+#         grepl("rig.?count",     texts, ignore.case = TRUE)
+#       
+#       # Return the first label-matched link, else first static-files link
+#       matched <- hrefs[label_match]
+#       chosen  <- if (length(matched) > 0) matched[1] else hrefs[1]
+#       if (!grepl("^http", chosen)) chosen <- paste0(BASE_URL, chosen)
+#       
+#       label <- if (length(matched) > 0) texts[label_match][1] else texts[1]
+#       message("  Selected link: \"", trimws(label), "\"")
+#       return(chosen)
+#     }
+#   }
+#   
+#   # Fallback: raw regex for any static-files UUID in the page
+#   sf_uuids <- regmatches(html,
+#                          gregexpr(paste0("(?<=static-files/)", UUID_PATTERN), html, perl = TRUE))[[1]]
+#   if (length(sf_uuids) > 0) {
+#     message("  Selected via raw UUID scan (no matching anchor found)")
+#     return(paste0(BASE_URL, "/static-files/", sf_uuids[1]))
+#   }
+#   
+#   NULL   # signal failure; caller will use FALLBACK_URL
+# }
+# 
+# LIVE_FILE <- file.path(tempdir(), "bh_rig_count_live.xlsx")
+# LIVE_URL  <- NULL
+# 
+# message("-- Step 1: Fetching BH page to discover Excel URL...")
+# page_resp <- tryCatch(
+#   httr::GET(PAGE_URL,
+#             httr::user_agent(BROWSER_UA),
+#             httr::add_headers(
+#               "Accept"          = "text/html,application/xhtml+xml,*/*;q=0.8",
+#               "Accept-Language" = "en-US,en;q=0.9",
+#               "Referer"         = "https://www.google.com/"),
+#             httr::timeout(30)),
+#   error = function(e) { message("  Page fetch failed: ", e$message); NULL }
+# )
+# 
+# discovered_url <- NULL
+# if (!is.null(page_resp) && httr::status_code(page_resp) == 200) {
+#   html           <- httr::content(page_resp, as = "text", encoding = "UTF-8")
+#   discovered_url <- find_excel_url(html)
+#   if (is.null(discovered_url))
+#     message("  No suitable link found in page; will use fallback URL.")
+# } else {
+#   message("  Page status: ",
+#           if (!is.null(page_resp)) httr::status_code(page_resp) else "unreachable")
+# }
+# 
+# # Probe list: discovered URL first, hardcoded fallback second
+# candidate_urls <- unique(c(discovered_url, FALLBACK_URL))
+# 
+# message("-- Step 2: Probing ", length(candidate_urls), " candidate URL(s)...")
+# for (url in candidate_urls) {
+#   message("  Trying: ", url)
+#   dl <- tryCatch(
+#     httr::GET(url,
+#               httr::user_agent(BROWSER_UA),
+#               httr::write_disk(LIVE_FILE, overwrite = TRUE),
+#               httr::timeout(120)),
+#     error = function(e) { message("    Download error: ", e$message); NULL }
+#   )
+#   code <- if (!is.null(dl)) httr::status_code(dl) else "error"
+#   sz   <- if (file.exists(LIVE_FILE)) file.size(LIVE_FILE) else 0
+#   
+#   if (!is.null(dl) && code == 200 && is_valid_xlsx(LIVE_FILE)) {
+#     LIVE_URL <- url
+#     message("  OK: valid xlsx (", round(sz / 1e6, 1), " MB)")
+#     break
+#   }
+#   message("    Not a valid xlsx (HTTP ", code, ", ", sz, " bytes)")
+# }
+# 
+# if (is.null(LIVE_URL)) {
+#   stop(
+#     "\nCould not download a valid Baker Hughes Excel file.\n",
+#     "Tried ", length(candidate_urls), " URL(s).\n\n",
+#     "Manual fix: download the file from\n",
+#     "  https://bakerhughesrigcount.gcs-web.com/na-rig-count/\n",
+#     "save it anywhere, then at the top of this script set:\n",
+#     "  LIVE_FILE <- 'C:/path/to/downloaded_file.xlsx'\n",
+#     "  LIVE_URL  <- 'manual'\n",
+#     "and comment out the entire Section 2 block."
+#   )
+# }
+# message("Live URL: ", LIVE_URL)
 
-PAGE_URL     <- "https://bakerhughesrigcount.gcs-web.com/na-rig-count/"
-BASE_URL     <- "https://bakerhughesrigcount.gcs-web.com"
-UUID_PATTERN <- "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-
-BROWSER_UA <- paste0("Mozilla/5.0 (Windows NT 10.0; Win64; x64) ",
-                     "AppleWebKit/537.36 (KHTML, like Gecko) ",
-                     "Chrome/124.0.0.0 Safari/537.36")
-
-# TRUE if `path` starts with PK magic bytes (xlsx = zip archive)
-is_valid_xlsx <- function(path) {
-  if (!file.exists(path) || file.size(path) < 1000) return(FALSE)
-  tryCatch({
-    con   <- file(path, "rb")
-    magic <- readBin(con, "raw", n = 4)
-    close(con)
-    identical(magic, as.raw(c(0x50, 0x4b, 0x03, 0x04)))
-  }, error = function(e) FALSE)
-}
-
-# Extract the best Excel URL from the page HTML.
-# Priority order:
-#   1. <a> tags whose visible text contains "North America" and "Rig Count"
-#      (i.e. the "North America Rig Count Report" link, NOT "Read More")
-#   2. Any static-files UUID that appears in the page
-#   3. Hardcoded fallback UUID
-find_excel_url <- function(html) {
-  page <- tryCatch(rvest::read_html(html), error = function(e) NULL)
-  
-  if (!is.null(page)) {
-    # All <a> elements that link to a static-files UUID
-    anchors  <- rvest::html_elements(page, paste0("a[href*='static-files']"))
-    hrefs    <- rvest::html_attr(anchors, "href")
-    texts    <- rvest::html_text2(anchors)
-    
-    if (length(hrefs) > 0) {
-      # Score each link: prefer ones whose text matches the report label
-      label_match <- grepl("north.?america", texts, ignore.case = TRUE) &
-        grepl("rig.?count",     texts, ignore.case = TRUE)
-      
-      # Return the first label-matched link, else first static-files link
-      matched <- hrefs[label_match]
-      chosen  <- if (length(matched) > 0) matched[1] else hrefs[1]
-      if (!grepl("^http", chosen)) chosen <- paste0(BASE_URL, chosen)
-      
-      label <- if (length(matched) > 0) texts[label_match][1] else texts[1]
-      message("  Selected link: \"", trimws(label), "\"")
-      return(chosen)
-    }
-  }
-  
-  # Fallback: raw regex for any static-files UUID in the page
-  sf_uuids <- regmatches(html,
-                         gregexpr(paste0("(?<=static-files/)", UUID_PATTERN), html, perl = TRUE))[[1]]
-  if (length(sf_uuids) > 0) {
-    message("  Selected via raw UUID scan (no matching anchor found)")
-    return(paste0(BASE_URL, "/static-files/", sf_uuids[1]))
-  }
-  
-  NULL   # signal failure; caller will use FALLBACK_URL
-}
-
-LIVE_FILE <- file.path(tempdir(), "bh_rig_count_live.xlsx")
-LIVE_URL  <- NULL
-
-message("-- Step 1: Fetching BH page to discover Excel URL...")
-page_resp <- tryCatch(
-  httr::GET(PAGE_URL,
-            httr::user_agent(BROWSER_UA),
-            httr::add_headers(
-              "Accept"          = "text/html,application/xhtml+xml,*/*;q=0.8",
-              "Accept-Language" = "en-US,en;q=0.9",
-              "Referer"         = "https://www.google.com/"),
-            httr::timeout(30)),
-  error = function(e) { message("  Page fetch failed: ", e$message); NULL }
-)
-
-discovered_url <- NULL
-if (!is.null(page_resp) && httr::status_code(page_resp) == 200) {
-  html           <- httr::content(page_resp, as = "text", encoding = "UTF-8")
-  discovered_url <- find_excel_url(html)
-  if (is.null(discovered_url))
-    message("  No suitable link found in page; will use fallback URL.")
-} else {
-  message("  Page status: ",
-          if (!is.null(page_resp)) httr::status_code(page_resp) else "unreachable")
-}
-
-# Probe list: discovered URL first, hardcoded fallback second
-candidate_urls <- unique(c(discovered_url, FALLBACK_URL))
-
-message("-- Step 2: Probing ", length(candidate_urls), " candidate URL(s)...")
-for (url in candidate_urls) {
-  message("  Trying: ", url)
-  dl <- tryCatch(
-    httr::GET(url,
-              httr::user_agent(BROWSER_UA),
-              httr::write_disk(LIVE_FILE, overwrite = TRUE),
-              httr::timeout(120)),
-    error = function(e) { message("    Download error: ", e$message); NULL }
-  )
-  code <- if (!is.null(dl)) httr::status_code(dl) else "error"
-  sz   <- if (file.exists(LIVE_FILE)) file.size(LIVE_FILE) else 0
-  
-  if (!is.null(dl) && code == 200 && is_valid_xlsx(LIVE_FILE)) {
-    LIVE_URL <- url
-    message("  OK: valid xlsx (", round(sz / 1e6, 1), " MB)")
-    break
-  }
-  message("    Not a valid xlsx (HTTP ", code, ", ", sz, " bytes)")
-}
-
-if (is.null(LIVE_URL)) {
-  stop(
-    "\nCould not download a valid Baker Hughes Excel file.\n",
-    "Tried ", length(candidate_urls), " URL(s).\n\n",
-    "Manual fix: download the file from\n",
-    "  https://bakerhughesrigcount.gcs-web.com/na-rig-count/\n",
-    "save it anywhere, then at the top of this script set:\n",
-    "  LIVE_FILE <- 'C:/path/to/downloaded_file.xlsx'\n",
-    "  LIVE_URL  <- 'manual'\n",
-    "and comment out the entire Section 2 block."
-  )
-}
-message("Live URL: ", LIVE_URL)
-
-# ── 3. Reader: NAM Weekly sheet → tidy data frame ────────────────────────────
+# -- 3. Reader: NAM Weekly sheet - tidy data frame ----------------------------
 # Schema (verified May 2026): headers on row 11 (skip = 10)
 #   A=Country  B=County  C=Basin  D=GOM  E=DrillFor  F=Location
 #   G=State/Province  H=Trajectory  I=Year  J=Month
@@ -205,7 +208,7 @@ read_nam_weekly <- function(path) {
     filter(!is.na(count), count >= 0)
 }
 
-# ── 4. Load & merge ───────────────────────────────────────────────────────────
+# -- 4. Load & merge -----------------------------------------------------------
 message("Reading live file...")
 live_data <- read_nam_weekly(LIVE_FILE)
 message("  Rows: ", nrow(live_data),
@@ -233,7 +236,7 @@ message("  Rows  : ", nrow(weekly))
 message("  Weeks : ", n_distinct(weekly$week))
 message("  Range : ", min(weekly$week), " -> ", max(weekly$week))
 
-# ── 5. Aggregated views ───────────────────────────────────────────────────────
+# -- 5. Aggregated views -------------------------------------------------------
 latest_wk <- max(weekly$week)
 
 # Helper: order factor levels by count in the latest week, highest first
@@ -270,7 +273,7 @@ us_by_location <- weekly %>%
   summarise(count = sum(count), .groups = "drop") %>%
   arrange(week, location)
 
-# 5d–5f. Basin helpers
+# 5d-5f. Basin helpers
 NAMED_BASINS <- c(
   "Permian", "Eagle Ford", "Haynesville", "Marcellus",
   "DJ-Niobrara", "Williston", "Utica", "Ardmore Woodford",
@@ -314,7 +317,7 @@ us_basin_gas <- weekly %>%
   filter(country == "United States", drill_for == "Gas") %>%
   make_basin_df()
 
-# 5g. US by state — top N + Other, ordered by latest week
+# 5g. US by state - top N + Other, ordered by latest week
 top_us_states <- weekly %>%
   filter(country == "United States", week == latest_wk) %>%
   group_by(state_prov) %>%
@@ -337,7 +340,7 @@ us_by_state <- weekly %>%
   }) %>%
   arrange(week, state_grp)
 
-# 5h. Canada by province — top N + Other, ordered by latest week
+# 5h. Canada by province - top N + Other, ordered by latest week
 top_ca_provs <- weekly %>%
   filter(country == "Canada", week == latest_wk) %>%
   group_by(state_prov) %>%
@@ -363,7 +366,7 @@ ca_by_prov <- weekly %>%
 message("Top US states    : ", paste(top_us_states, collapse = ", "))
 message("Top CA provinces : ", paste(top_ca_provs,  collapse = ", "))
 
-# ── 6. Colour palette ─────────────────────────────────────────────────────────
+# -- 6. Colour palette ---------------------------------------------------------
 PALETTE <- c(
   "United States"    = "#1f77b4",
   "Canada"           = "#2ca02c",
@@ -416,7 +419,7 @@ get_color <- function(nms) {
   })
 }
 
-# ── 7. Trace builder ──────────────────────────────────────────────────────────
+# -- 7. Trace builder ----------------------------------------------------------
 make_traces <- function(df, x_col, grp_col, y_col,
                         visible = TRUE, mode = "lines", stackgroup = NULL) {
   grps <- levels(factor(df[[grp_col]]))
@@ -446,7 +449,7 @@ make_traces <- function(df, x_col, grp_col, y_col,
   })
 }
 
-# ── 8. Build all trace groups ─────────────────────────────────────────────────
+# -- 8. Build all trace groups -------------------------------------------------
 tr_A <- make_traces(filter(na_weekly, country %in% c("United States", "Canada")),
                     "week", "country",   "count", visible = TRUE)
 tr_B <- make_traces(us_by_type,     "week", "drill_for", "count", visible = FALSE)
@@ -482,7 +485,7 @@ hover_for <- function(idx) {
   ifelse(vis_for(idx), "x+y+name", "skip")
 }
 
-# ── 9. Assemble figure ────────────────────────────────────────────────────────
+# -- 9. Assemble figure --------------------------------------------------------
 make_btn <- function(label, vis, hover, subtitle) {
   list(label = label, method = "update",
        args = list(
@@ -500,13 +503,13 @@ for (tr in all_traces) fig <- do.call(add_trace, c(list(p = fig), tr))
 fig <- fig %>%
   layout(
     # Title is rendered as a plain HTML div ABOVE the widget via
-    # htmltools::prependContent — completely outside Plotly's coordinate
+    # htmltools::prependContent - completely outside Plotly's coordinate
     # system, so it never overlaps buttons regardless of browser width.
     margin = list(t = 130, b = 80, l = 60, r = 20),
     
     xaxis = list(
       title = "",
-      # Range selector removed — rangeslider + 1Y/2Y/5Y/10Y/All buttons
+      # Range selector removed - rangeslider + 1Y/2Y/5Y/10Y/All buttons
       # below handle all time-span selection needs without eating header space
       rangeslider = list(visible = TRUE, thickness = 0.05)
     ),
@@ -526,7 +529,7 @@ fig <- fig %>%
     paper_bgcolor = "#f9f9f9",
     plot_bgcolor  = "#ffffff",
     
-    # ── View-toggle buttons (top row) ───────────────────────────────────────
+    # -- View-toggle buttons (top row) ---------------------------------------
     updatemenus = list(list(
       type        = "buttons",
       direction   = "right",
@@ -541,26 +544,26 @@ fig <- fig %>%
       font        = list(size = 11),
       buttons = list(
         make_btn("US vs Canada",
-                 vis_for(1), hover_for(1), "North America — weekly"),
+                 vis_for(1), hover_for(1), "North America - weekly"),
         make_btn("US by Type",
-                 vis_for(2), hover_for(2), "US rigs by drill target — weekly"),
+                 vis_for(2), hover_for(2), "US rigs by drill target - weekly"),
         make_btn("US by Location",
-                 vis_for(3), hover_for(3), "US rigs by location — weekly"),
+                 vis_for(3), hover_for(3), "US rigs by location - weekly"),
         make_btn("US by Basin (All)",
-                 vis_for(4), hover_for(4), "US rigs by basin, all targets — stacked"),
-        make_btn("US Basin — Oil",
-                 vis_for(5), hover_for(5), "US rigs by basin, oil-directed — stacked"),
-        make_btn("US Basin — Gas",
-                 vis_for(6), hover_for(6), "US rigs by basin, gas-directed — stacked"),
+                 vis_for(4), hover_for(4), "US rigs by basin, all targets - stacked"),
+        make_btn("US Basin - Oil",
+                 vis_for(5), hover_for(5), "US rigs by basin, oil-directed - stacked"),
+        make_btn("US Basin - Gas",
+                 vis_for(6), hover_for(6), "US rigs by basin, gas-directed - stacked"),
         make_btn(paste0("US by State (top ", TOP_N_US, ")"),
                  vis_for(7), hover_for(7),
-                 paste0("US top ", TOP_N_US, " states + Other — stacked")),
+                 paste0("US top ", TOP_N_US, " states + Other - stacked")),
         make_btn(paste0("Canada by Prov. (top ", TOP_N_CA, ")"),
                  vis_for(8), hover_for(8),
-                 paste0("Canada top ", TOP_N_CA, " provinces + Other — stacked"))
+                 paste0("Canada top ", TOP_N_CA, " provinces + Other - stacked"))
       )
     ),
-    # ── Time-span buttons (below view buttons, above plot) ──────────────────
+    # -- Time-span buttons (below view buttons, above plot) ------------------
     list(
       type      = "buttons",
       direction = "right",
@@ -596,7 +599,7 @@ fig <- fig %>%
     )),
     
     annotations = list(
-      # Title — sits in margin above the view buttons
+      # Title - sits in margin above the view buttons
       list(
         text      = paste0("<b>Baker Hughes North American Rig Count</b> - weekly, 2013 to ", gsub('  ', ' ',(format(as.Date(max(weekly$week)),  "%B %e, %Y")))),
         font      = list(size = 14, color = "#333333"),
@@ -608,9 +611,9 @@ fig <- fig %>%
       list(
         text = paste0(
           "Source: Baker Hughes  |  ",
-          "Historical file: Jan 2013–Aug 2025  |  ",
+          "Historical file: Jan 2013-Aug 2025  |  ",
           "Live download through: ", max(weekly$week),
-          "  |  Stacked basins/states sorted highest→lowest as of latest week"
+          "  |  Stacked basins/states sorted highest-lowest as of latest week"
         ),
         showarrow = FALSE, xref = "paper", yref = "paper",
         x = 0, y = -0.15, xanchor = "left", yanchor = "top",
@@ -628,15 +631,15 @@ fig <- fig %>%
       width = 1400, height = 750, scale = 2)
   )
 
-# ── 10. Save & open ───────────────────────────────────────────────────────────
-# Single self-contained HTML — all JS/CSS inlined via pandoc.
+# -- 10. Save & open -----------------------------------------------------------
+# Single self-contained HTML - all JS/CSS inlined via pandoc.
 # Title is a Plotly annotation sitting in the margin above the buttons.
 htmlwidgets::saveWidget(fig, OUT_HTML, selfcontained = TRUE)
 message("\nChart saved -> ", normalizePath(OUT_HTML))
 message("File size: ", round(file.size(OUT_HTML) / 1e6, 1), " MB")
 browseURL(OUT_HTML)
 
-# ── 11. Console summary ───────────────────────────────────────────────────────
+# -- 11. Console summary -------------------------------------------------------
 us_n <- weekly %>% filter(week == latest_wk, country == "United States") %>%
   summarise(n = sum(count)) %>% pull(n)
 ca_n <- weekly %>% filter(week == latest_wk, country == "Canada") %>%

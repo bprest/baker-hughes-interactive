@@ -1,0 +1,84 @@
+name: Update Rig Count
+
+on:
+  schedule:
+    - cron: '0 14 * * 5'  # Every Friday at 2pm UTC (BH typically releases Friday mornings ET)
+  workflow_dispatch:        # Allows manual trigger from the Actions tab on GitHub
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up R
+        uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: 'release'
+
+      - name: Install system dependencies
+        run: sudo apt-get install -y libcurl4-openssl-dev libssl-dev libxml2-dev
+
+      - name: Install R packages
+        run: |
+          install.packages(
+            c("httr", "rvest", "jsonlite", "readxl",
+              "dplyr", "tidyr", "lubridate", "plotly",
+              "stringr", "htmlwidgets"),
+            repos = "https://cloud.r-project.org"
+          )
+        shell: Rscript {0}
+
+      - name: Discover and download latest BH Excel file
+        run: |
+          # Try to scrape the page for the report link
+          URL=$(curl -sL \
+            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
+            -H "Accept: text/html,application/xhtml+xml,*/*;q=0.8" \
+            -H "Accept-Language: en-US,en;q=0.9" \
+            -H "Referer: https://www.google.com/" \
+            "https://bakerhughesrigcount.gcs-web.com/na-rig-count/" \
+            | grep -oP '(?<=href=")[^"]*static-files/[a-f0-9\-]{36}[^"]*' \
+            | head -1)
+
+          # Fall back to known UUID if scrape fails
+          if [ -z "$URL" ]; then
+            URL="https://bakerhughesrigcount.gcs-web.com/static-files/99401d53-5549-42c3-96fa-844237f73a74"
+            echo "Page scrape found no URL — using fallback"
+          else
+            # Prepend base URL if href was relative
+            if [[ "$URL" != http* ]]; then
+              URL="https://bakerhughesrigcount.gcs-web.com$URL"
+            fi
+          fi
+
+          echo "Downloading: $URL"
+          curl -L \
+            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+            -H "Referer: https://bakerhughesrigcount.gcs-web.com/na-rig-count/" \
+            --retry 3 --retry-delay 10 \
+            --max-time 120 \
+            -o bh_rig_count_live.xlsx \
+            "$URL"
+
+          # Verify it looks like a valid xlsx (zip magic bytes PK)
+          if ! xxd -l 4 bh_rig_count_live.xlsx | grep -q "504b 0304"; then
+            echo "Downloaded file does not appear to be a valid xlsx — aborting"
+            exit 1
+          fi
+
+          echo "Download successful: $(du -sh bh_rig_count_live.xlsx | cut -f1)"
+
+      - name: Run rig count R script
+        run: Rscript bh_rig_count.R
+
+      - name: Commit and push updated HTML
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add bh_rig_count_interactive.html
+          # Only commit if the file actually changed
+          git diff --staged --quiet || git commit -m "Auto-update rig count $(date +'%B %-d, %Y')"
+          git push
