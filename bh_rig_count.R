@@ -51,137 +51,137 @@ suppressPackageStartupMessages({
   library(lubridate); library(plotly);  library(stringr)
 })
 
-# httr::set_config(httr::use_proxy(url = Sys.getenv("HTTPS_PROXY")))
-# # -- 2. Auto-discover and download the latest Excel file -----------------------
-# # The BH rig count page is a React SPA. File links appear as UUIDs inside a
-# # __NEXT_DATA__ JSON blob or raw href attributes. We collect ALL candidate
-# # UUIDs from the page, then probe each one until we download a valid xlsx.
-# # If the page is unreachable we fall back to the hardcoded UUID.
-# 
-# PAGE_URL     <- "https://bakerhughesrigcount.gcs-web.com/na-rig-count/"
-# BASE_URL     <- "https://bakerhughesrigcount.gcs-web.com"
-# UUID_PATTERN <- "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-# 
-# BROWSER_UA <- paste0("Mozilla/5.0 (Windows NT 10.0; Win64; x64) ",
-#                      "AppleWebKit/537.36 (KHTML, like Gecko) ",
-#                      "Chrome/124.0.0.0 Safari/537.36")
-# 
-# # TRUE if `path` starts with PK magic bytes (xlsx = zip archive)
-# is_valid_xlsx <- function(path) {
-#   if (!file.exists(path) || file.size(path) < 1000) return(FALSE)
-#   tryCatch({
-#     con   <- file(path, "rb")
-#     magic <- readBin(con, "raw", n = 4)
-#     close(con)
-#     identical(magic, as.raw(c(0x50, 0x4b, 0x03, 0x04)))
-#   }, error = function(e) FALSE)
-# }
-# 
-# # Extract the best Excel URL from the page HTML.
-# # Priority order:
-# #   1. <a> tags whose visible text contains "North America" and "Rig Count"
-# #      (i.e. the "North America Rig Count Report" link, NOT "Read More")
-# #   2. Any static-files UUID that appears in the page
-# #   3. Hardcoded fallback UUID
-# find_excel_url <- function(html) {
-#   page <- tryCatch(rvest::read_html(html), error = function(e) NULL)
-#   
-#   if (!is.null(page)) {
-#     # All <a> elements that link to a static-files UUID
-#     anchors  <- rvest::html_elements(page, paste0("a[href*='static-files']"))
-#     hrefs    <- rvest::html_attr(anchors, "href")
-#     texts    <- rvest::html_text2(anchors)
-#     
-#     if (length(hrefs) > 0) {
-#       # Score each link: prefer ones whose text matches the report label
-#       label_match <- grepl("north.?america", texts, ignore.case = TRUE) &
-#         grepl("rig.?count",     texts, ignore.case = TRUE)
-#       
-#       # Return the first label-matched link, else first static-files link
-#       matched <- hrefs[label_match]
-#       chosen  <- if (length(matched) > 0) matched[1] else hrefs[1]
-#       if (!grepl("^http", chosen)) chosen <- paste0(BASE_URL, chosen)
-#       
-#       label <- if (length(matched) > 0) texts[label_match][1] else texts[1]
-#       message("  Selected link: \"", trimws(label), "\"")
-#       return(chosen)
-#     }
-#   }
-#   
-#   # Fallback: raw regex for any static-files UUID in the page
-#   sf_uuids <- regmatches(html,
-#                          gregexpr(paste0("(?<=static-files/)", UUID_PATTERN), html, perl = TRUE))[[1]]
-#   if (length(sf_uuids) > 0) {
-#     message("  Selected via raw UUID scan (no matching anchor found)")
-#     return(paste0(BASE_URL, "/static-files/", sf_uuids[1]))
-#   }
-#   
-#   NULL   # signal failure; caller will use FALLBACK_URL
-# }
-# 
-# LIVE_FILE <- file.path(tempdir(), "bh_rig_count_live.xlsx")
-# LIVE_URL  <- NULL
-# 
-# message("-- Step 1: Fetching BH page to discover Excel URL...")
-# page_resp <- tryCatch(
-#   httr::GET(PAGE_URL,
-#             httr::user_agent(BROWSER_UA),
-#             httr::add_headers(
-#               "Accept"          = "text/html,application/xhtml+xml,*/*;q=0.8",
-#               "Accept-Language" = "en-US,en;q=0.9",
-#               "Referer"         = "https://www.google.com/"),
-#             httr::timeout(30)),
-#   error = function(e) { message("  Page fetch failed: ", e$message); NULL }
-# )
-# 
-# discovered_url <- NULL
-# if (!is.null(page_resp) && httr::status_code(page_resp) == 200) {
-#   html           <- httr::content(page_resp, as = "text", encoding = "UTF-8")
-#   discovered_url <- find_excel_url(html)
-#   if (is.null(discovered_url))
-#     message("  No suitable link found in page; will use fallback URL.")
-# } else {
-#   message("  Page status: ",
-#           if (!is.null(page_resp)) httr::status_code(page_resp) else "unreachable")
-# }
-# 
-# # Probe list: discovered URL first, hardcoded fallback second
-# candidate_urls <- unique(c(discovered_url, FALLBACK_URL))
-# 
-# message("-- Step 2: Probing ", length(candidate_urls), " candidate URL(s)...")
-# for (url in candidate_urls) {
-#   message("  Trying: ", url)
-#   dl <- tryCatch(
-#     httr::GET(url,
-#               httr::user_agent(BROWSER_UA),
-#               httr::write_disk(LIVE_FILE, overwrite = TRUE),
-#               httr::timeout(120)),
-#     error = function(e) { message("    Download error: ", e$message); NULL }
-#   )
-#   code <- if (!is.null(dl)) httr::status_code(dl) else "error"
-#   sz   <- if (file.exists(LIVE_FILE)) file.size(LIVE_FILE) else 0
-#   
-#   if (!is.null(dl) && code == 200 && is_valid_xlsx(LIVE_FILE)) {
-#     LIVE_URL <- url
-#     message("  OK: valid xlsx (", round(sz / 1e6, 1), " MB)")
-#     break
-#   }
-#   message("    Not a valid xlsx (HTTP ", code, ", ", sz, " bytes)")
-# }
-# 
-# if (is.null(LIVE_URL)) {
-#   stop(
-#     "\nCould not download a valid Baker Hughes Excel file.\n",
-#     "Tried ", length(candidate_urls), " URL(s).\n\n",
-#     "Manual fix: download the file from\n",
-#     "  https://bakerhughesrigcount.gcs-web.com/na-rig-count/\n",
-#     "save it anywhere, then at the top of this script set:\n",
-#     "  LIVE_FILE <- 'C:/path/to/downloaded_file.xlsx'\n",
-#     "  LIVE_URL  <- 'manual'\n",
-#     "and comment out the entire Section 2 block."
-#   )
-# }
-# message("Live URL: ", LIVE_URL)
+httr::set_config(httr::use_proxy(url = Sys.getenv("HTTPS_PROXY")))
+# -- 2. Auto-discover and download the latest Excel file -----------------------
+# The BH rig count page is a React SPA. File links appear as UUIDs inside a
+# __NEXT_DATA__ JSON blob or raw href attributes. We collect ALL candidate
+# UUIDs from the page, then probe each one until we download a valid xlsx.
+# If the page is unreachable we fall back to the hardcoded UUID.
+
+PAGE_URL     <- "https://bakerhughesrigcount.gcs-web.com/na-rig-count/"
+BASE_URL     <- "https://bakerhughesrigcount.gcs-web.com"
+UUID_PATTERN <- "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+
+BROWSER_UA <- paste0("Mozilla/5.0 (Windows NT 10.0; Win64; x64) ",
+                     "AppleWebKit/537.36 (KHTML, like Gecko) ",
+                     "Chrome/124.0.0.0 Safari/537.36")
+
+# TRUE if `path` starts with PK magic bytes (xlsx = zip archive)
+is_valid_xlsx <- function(path) {
+  if (!file.exists(path) || file.size(path) < 1000) return(FALSE)
+  tryCatch({
+    con   <- file(path, "rb")
+    magic <- readBin(con, "raw", n = 4)
+    close(con)
+    identical(magic, as.raw(c(0x50, 0x4b, 0x03, 0x04)))
+  }, error = function(e) FALSE)
+}
+
+# Extract the best Excel URL from the page HTML.
+# Priority order:
+#   1. <a> tags whose visible text contains "North America" and "Rig Count"
+#      (i.e. the "North America Rig Count Report" link, NOT "Read More")
+#   2. Any static-files UUID that appears in the page
+#   3. Hardcoded fallback UUID
+find_excel_url <- function(html) {
+  page <- tryCatch(rvest::read_html(html), error = function(e) NULL)
+
+  if (!is.null(page)) {
+    # All <a> elements that link to a static-files UUID
+    anchors  <- rvest::html_elements(page, paste0("a[href*='static-files']"))
+    hrefs    <- rvest::html_attr(anchors, "href")
+    texts    <- rvest::html_text2(anchors)
+
+    if (length(hrefs) > 0) {
+      # Score each link: prefer ones whose text matches the report label
+      label_match <- grepl("north.?america", texts, ignore.case = TRUE) &
+        grepl("rig.?count",     texts, ignore.case = TRUE)
+
+      # Return the first label-matched link, else first static-files link
+      matched <- hrefs[label_match]
+      chosen  <- if (length(matched) > 0) matched[1] else hrefs[1]
+      if (!grepl("^http", chosen)) chosen <- paste0(BASE_URL, chosen)
+
+      label <- if (length(matched) > 0) texts[label_match][1] else texts[1]
+      message("  Selected link: \"", trimws(label), "\"")
+      return(chosen)
+    }
+  }
+
+  # Fallback: raw regex for any static-files UUID in the page
+  sf_uuids <- regmatches(html,
+                         gregexpr(paste0("(?<=static-files/)", UUID_PATTERN), html, perl = TRUE))[[1]]
+  if (length(sf_uuids) > 0) {
+    message("  Selected via raw UUID scan (no matching anchor found)")
+    return(paste0(BASE_URL, "/static-files/", sf_uuids[1]))
+  }
+
+  NULL   # signal failure; caller will use FALLBACK_URL
+}
+
+LIVE_FILE <- file.path(tempdir(), "bh_rig_count_live.xlsx")
+LIVE_URL  <- NULL
+
+message("-- Step 1: Fetching BH page to discover Excel URL...")
+page_resp <- tryCatch(
+  httr::GET(PAGE_URL,
+            httr::user_agent(BROWSER_UA),
+            httr::add_headers(
+              "Accept"          = "text/html,application/xhtml+xml,*/*;q=0.8",
+              "Accept-Language" = "en-US,en;q=0.9",
+              "Referer"         = "https://www.google.com/"),
+            httr::timeout(30)),
+  error = function(e) { message("  Page fetch failed: ", e$message); NULL }
+)
+
+discovered_url <- NULL
+if (!is.null(page_resp) && httr::status_code(page_resp) == 200) {
+  html           <- httr::content(page_resp, as = "text", encoding = "UTF-8")
+  discovered_url <- find_excel_url(html)
+  if (is.null(discovered_url))
+    message("  No suitable link found in page; will use fallback URL.")
+} else {
+  message("  Page status: ",
+          if (!is.null(page_resp)) httr::status_code(page_resp) else "unreachable")
+}
+
+# Probe list: discovered URL first, hardcoded fallback second
+candidate_urls <- unique(c(discovered_url, FALLBACK_URL))
+
+message("-- Step 2: Probing ", length(candidate_urls), " candidate URL(s)...")
+for (url in candidate_urls) {
+  message("  Trying: ", url)
+  dl <- tryCatch(
+    httr::GET(url,
+              httr::user_agent(BROWSER_UA),
+              httr::write_disk(LIVE_FILE, overwrite = TRUE),
+              httr::timeout(120)),
+    error = function(e) { message("    Download error: ", e$message); NULL }
+  )
+  code <- if (!is.null(dl)) httr::status_code(dl) else "error"
+  sz   <- if (file.exists(LIVE_FILE)) file.size(LIVE_FILE) else 0
+
+  if (!is.null(dl) && code == 200 && is_valid_xlsx(LIVE_FILE)) {
+    LIVE_URL <- url
+    message("  OK: valid xlsx (", round(sz / 1e6, 1), " MB)")
+    break
+  }
+  message("    Not a valid xlsx (HTTP ", code, ", ", sz, " bytes)")
+}
+
+if (is.null(LIVE_URL)) {
+  stop(
+    "\nCould not download a valid Baker Hughes Excel file.\n",
+    "Tried ", length(candidate_urls), " URL(s).\n\n",
+    "Manual fix: download the file from\n",
+    "  https://bakerhughesrigcount.gcs-web.com/na-rig-count/\n",
+    "save it anywhere, then at the top of this script set:\n",
+    "  LIVE_FILE <- 'C:/path/to/downloaded_file.xlsx'\n",
+    "  LIVE_URL  <- 'manual'\n",
+    "and comment out the entire Section 2 block."
+  )
+}
+message("Live URL: ", LIVE_URL)
 
 # -- 3. Reader: NAM Weekly sheet - tidy data frame ----------------------------
 # Schema (verified May 2026): headers on row 11 (skip = 10)
