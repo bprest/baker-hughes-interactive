@@ -23,6 +23,7 @@
 
 # Path to your historical Excel file (2013-Aug 2025).
 # Can be absolute or relative to your R working directory.
+setwd('C:/Users/prest/Github/baker-hughes-interactive')
 HIST_FILE <- "08-29-2025 North America Rig Count Report.xlsx"
 # LIVE_FILE <- "bh_rig_count_live.xlsx"
 # LIVE_URL  <- "manual"
